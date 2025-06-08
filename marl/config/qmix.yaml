@@ -1,0 +1,14 @@
+alg: QMIX
+env: impaler.MZEnv
+model:
+  mixer: qmix
+  fcnet_hiddens: [256, 256]
+replay_buffer_config:
+  capacity: 1000000
+  learning_starts: 10000
+exploration_config:
+  epsilon_timesteps: 50000
+lr: 5e-4
+train_batch_size: 32000
+num_workers: 4
+framework: torch
