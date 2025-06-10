@@ -51,6 +51,9 @@ class System4Planner:
     admm_config: ADMMConfig
     priority_config: PlanningPriorities
     admm_on: bool
+    rho: float
+    tolerance: float
+    max_iterations: int
     intelligence_system: 'PlannerIntelligence'
     z_consensus: Dict[str, float]
     u_duals: DefaultDict[str, DefaultDict[str, float]]
@@ -80,6 +83,11 @@ class System4Planner:
         self.admm_config = model.config.admm_config
         self.priority_config = model.config.planning_priorities
         self.admm_on = model.config.admm_on
+
+        # ADMM parameter shortcuts
+        self.rho = self.admm_config.rho
+        self.tolerance = self.admm_config.tolerance
+        self.max_iterations = self.admm_config.max_iterations
 
         admm_params = getattr(model.config, "admm_parameters", {})
         self.lambdas: Dict[str, float] = admm_params.get("lambdas", {}).copy()
@@ -119,7 +127,9 @@ class System4Planner:
             "distributed": self.distributed_planning,
             "optimization_based": self.optimization_based_planning,
         }
-        self.logger.info(f"System4Planner initialisiert (ADMM: {self.admm_on}, Methode: {self.active_planning_method}).")
+        self.logger.info(
+            f"System4Planner initialisiert (ADMM: {self.admm_on}, Rho: {self.rho}, Tol: {self.tolerance}, Methode: {self.active_planning_method})."
+        )
 
     def handle_crisis_start(self, crisis_type: str, effects: Dict[str, Any]) -> None:
         """Placeholder to react to crisis start notifications."""
@@ -529,7 +539,7 @@ class System4Planner:
             )  # type: ignore
             self._admm_update_z(agents_local_solutions)
             self._admm_update_u(agents_local_solutions)
-            primal_res, dual_res = self._compute_admm_residuals(agents_local_solutions, agents_prev_solutions, rho)
+            primal_res, dual_res = self._compute_admm_residuals_iteration(agents_local_solutions, agents_prev_solutions, rho)
             self.logger.debug(f"[ADMM Iter {admm_i+1}] Primal Res: {primal_res:.4f}, Dual Res: {dual_res:.4f}")
             self._prev_x_locals = {pid: sol.copy() for pid, sol in agents_local_solutions.items()}
             final_primal_res, final_dual_res = primal_res, dual_res
@@ -548,6 +558,55 @@ class System4Planner:
         })
         return self.z_consensus.copy()
 
+    def run_admm_optimization(self) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
+        """
+        Führt die robuste ADMM-Optimierung durch, um den globalen Plan (u*)
+        und die Schattenpreise (λ*) zu finden.
+
+        Returns:
+            Ein Tupel bestehend aus:
+            - Dem optimalen Produktionsplan (z_consensus).
+            - Den Schattenpreisen für Knappheit (u_duals).
+        """
+        self.logger.info("Starte DRO-ADMM Optimierung...")
+
+        active_producers = [p for p in self.model.producers if not getattr(p, "bankrupt", False)]  # type: ignore
+        if not active_producers:
+            self.logger.warning("Keine aktiven Producer für ADMM-Optimierung gefunden. Breche ab.")
+            return {}, {}
+
+        if not self.z_consensus:
+            demand_estimate = self.intelligence_system.get_demand_forecast()
+            self.z_consensus = self._basic_capacity_allocation(demand_estimate)
+
+        for k in range(self.max_iterations):
+            x_locals = self._admm_x_update(active_producers)
+
+            z_old = self.z_consensus.copy()
+            self._admm_z_update(x_locals)
+
+            self._admm_u_update(x_locals)
+
+            primal_res, dual_res = self._compute_admm_residuals(z_old, x_locals)
+            self.admm_convergence_history.append({
+                "iteration": k, "primal_residual": primal_res, "dual_residual": dual_res
+            })
+            self.logger.debug(f"[ADMM Iter {k+1}] Primal Res: {primal_res:.4f}, Dual Res: {dual_res:.4f}")
+
+            if primal_res < self.tolerance and dual_res < self.tolerance:
+                self.logger.info(f"ADMM konvergiert nach {k+1} Iterationen.")
+                break
+        else:
+            self.logger.warning(
+                f"ADMM hat die maximale Anzahl von {self.max_iterations} Iterationen erreicht, ohne zu konvergieren."
+            )
+
+        optimal_plan = self.z_consensus
+        shadow_prices = self.u_duals
+
+        self.logger.info("DRO-ADMM Optimierung abgeschlossen.")
+        return optimal_plan, shadow_prices
+
     def fed_update(self, global_vec: np.ndarray) -> None:
         """Simple federated learning update averaging with current parameters."""
         incoming = np.asarray(global_vec, dtype=np.float32)
@@ -556,6 +615,63 @@ class System4Planner:
         self.global_params = 0.5 * self.global_params + 0.5 * incoming
         for p in self.model.producers:
             p.local_model_params = self.global_params.copy()
+
+    def _admm_x_update(self, producers: List['ProducerAgent']) -> Dict[str, Dict[str, float]]:
+        """
+        Koordiniert den x-update Schritt, indem jeder Producer sein lokales Subproblem löst.
+        Gibt die lokalen Lösungen aller Producer zurück.
+        """
+        local_solutions: Dict[str, Dict[str, float]] = {}
+        for producer in producers:
+            u_vals_for_producer = self.u_duals.get(producer.unique_id, {})
+            solution = producer.local_subproblem_admm(
+                goods=list(self.z_consensus.keys()),
+                lambdas=self.lambdas,
+                z_vals=self.z_consensus,
+                u_vals=u_vals_for_producer,
+                rho=self.rho,
+            )
+            local_solutions[producer.unique_id] = solution
+        return local_solutions
+
+    def _admm_z_update(self, local_solutions: Dict[str, Dict[str, float]]):
+        """Aktualisiert die globale Konsens-Variable 'z'."""
+        avg_term: DefaultDict[str, float] = defaultdict(float)
+        counts: DefaultDict[str, int] = defaultdict(int)
+
+        for good in self.z_consensus.keys():
+            for producer_id, solution in local_solutions.items():
+                if good in solution:
+                    x_i = solution[good]
+                    u_i = self.u_duals[producer_id].get(good, 0.0)
+                    avg_term[good] += x_i + u_i
+                    counts[good] += 1
+
+        for good, total_val in avg_term.items():
+            if counts[good] > 0:
+                self.z_consensus[good] = max(0.0, total_val / counts[good])
+
+    def _admm_u_update(self, local_solutions: Dict[str, Dict[str, float]]):
+        """Aktualisiert die Dualvariablen 'u' für jeden Producer."""
+        for producer_id, solution in local_solutions.items():
+            for good, x_i in solution.items():
+                z = self.z_consensus.get(good, 0.0)
+                self.u_duals[producer_id][good] += (x_i - z)
+
+    def _compute_admm_residuals(self, z_old: Dict[str, float], local_solutions: Dict[str, Dict[str, float]]) -> Tuple[float, float]:
+        """Berechnet die primalen und dualen Residuen zur Konvergenzprüfung."""
+        primal_res_sq = 0.0
+        for local_sol in local_solutions.values():
+            for good, x_val in local_sol.items():
+                primal_res_sq += (x_val - self.z_consensus.get(good, 0.0)) ** 2
+        primal_residual = np.sqrt(primal_res_sq)
+
+        dual_res_sq = 0.0
+        for good, z_val in self.z_consensus.items():
+            dual_res_sq += (z_val - z_old.get(good, 0.0)) ** 2
+        dual_residual = self.rho * np.sqrt(dual_res_sq)
+
+        return primal_residual, dual_residual
 
     def _admm_update_x(self, producers: List['ProducerAgent'], lambdas: Dict[str, float], rho: float) -> Dict[str, Dict[str, float]]:
         results = {}
@@ -607,7 +723,7 @@ class System4Planner:
                        updated_count += 1
         self.logger.debug(f"ADMM u_duals aktualisiert ({updated_count} Einträge).")
 
-    def _compute_admm_residuals(self, current_x: Dict[str, Dict[str,float]], prev_x: Dict[str, Dict[str,float]], rho: float) -> Tuple[float, float]:
+    def _compute_admm_residuals_iteration(self, current_x: Dict[str, Dict[str,float]], prev_x: Dict[str, Dict[str,float]], rho: float) -> Tuple[float, float]:
         primal_res_sq, dual_res_sq = 0.0, 0.0
         num_primal_terms, num_dual_terms = 0, 0
 

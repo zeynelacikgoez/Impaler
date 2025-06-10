@@ -101,7 +101,12 @@ except ImportError as e:
     System5Policy = DummyVSMSystem
 
 # Datenstrukturen für Kommunikation
-# from ..vsm.communication_contracts import OperationalReportS3, StrategicDirectiveS4, ConflictResolutionDirectiveS2, SystemFeedback # Falls ausgelagert
+from ..vsm.communication_contracts import (
+    OperationalReportS3,
+    StrategicDirectiveS4,
+    ConflictResolutionDirectiveS2,
+    SystemFeedback,
+)
 
 # Utils
 from ..utils.math_utils import gini_coefficient
@@ -1186,8 +1191,23 @@ class EconomicModel:
             self.system5policy.step_stage("system5_policy")
 
     def stage_system4_strategic_planning(self):
-        if self.system4planner and hasattr(self.system4planner, "step_stage"):
-            self.system4planner.step_stage("system4_strategic_planning")
+        if self.system4planner and hasattr(self.system4planner, 'run_admm_optimization'):
+            optimal_plan, shadow_prices = self.system4planner.run_admm_optimization()
+
+            self.current_strategic_plan = StrategicDirectiveS4(
+                step=self.current_step + 1,
+                production_targets=optimal_plan,
+            )
+
+            self.logger.info("Verteile Schattenpreise an Producer...")
+            for producer in self.producers:
+                if hasattr(producer, 'receive_shadow_prices'):
+                    producer_prices = shadow_prices.get(producer.unique_id, {})
+                    producer.receive_shadow_prices(producer_prices)
+
+            # self.u_t = self._convert_plan_to_control_vector(optimal_plan)
+        else:
+            self.logger.warning("System4Planner oder seine run_admm_optimization Methode nicht gefunden.")
 
     def stage_system4_tactical_planning(self):
         if self.system4planner and hasattr(self.system4planner, "step_stage"):
