@@ -47,6 +47,7 @@ from pydantic import ValidationError
 from .stagemanager import StageManager
 from .crisismanager import CrisisManager
 from .datacollector import DataCollector
+from .state_estimator import StateEstimator
 from .config import (
     SimulationConfig,
     create_default_config,
@@ -140,6 +141,10 @@ class EconomicModel:
     data_collector: DataCollector
     stage_manager: StageManager
     crisis_manager: CrisisManager
+    state_estimator: Optional[StateEstimator]
+    mu_t: Optional[np.ndarray]
+    P_t: Optional[np.ndarray]
+    u_t: Optional[np.ndarray]
     producers: List[ProducerAgent]
     consumers: List[ConsumerAgent]
     resource_agent: Optional[ResourceAgent]
@@ -232,6 +237,13 @@ class EconomicModel:
         self.crisis_manager: CrisisManager = CrisisManager(
             self
         )  # Nimmt das Model als Argument
+        self.state_estimator = None
+        if self.config.state_estimator_config.enabled:
+            self.state_estimator = StateEstimator(self)
+
+        self.mu_t = None
+        self.P_t = None
+        self.u_t = np.zeros(1)
 
         # 6. Agentenlisten und Lookups initialisieren
         self.producers: List[ProducerAgent] = []
@@ -867,6 +879,13 @@ class EconomicModel:
         # Hier verwenden wir eine vordefinierte Logik.
         stage_definitions = [
             ("resource_regen", self.stage_resource_regen, True, 10, []),
+            (
+                "state_estimation",
+                self.stage_state_estimation,
+                False,
+                15,
+                ["resource_regen"],
+            ),
             ("need_estimation", self.stage_need_estimation, True, 20, []),
             (
                 "infrastructure_development",
@@ -887,7 +906,7 @@ class EconomicModel:
                 self.stage_system4_strategic_planning,
                 False,
                 50,
-                ["system5_policy", "need_estimation"],
+                ["system5_policy", "need_estimation", "state_estimation"],
             ),
             (
                 "system4_tactical_planning",
@@ -1070,6 +1089,30 @@ class EconomicModel:
             self.logger.warning(
                 "Kein ResourceAgent vorhanden für 'resource_regen' Stage."
             )
+
+    def stage_state_estimation(self):
+        """Stage: Führt die Zustandsschätzung für den aktuellen Schritt durch."""
+        if not self.state_estimator:
+            self.logger.debug("Zustandsschätzung übersprungen (deaktiviert).")
+            return
+
+        u_t_minus_1 = self.u_t if self.u_t is not None else np.zeros(1)
+
+        if hasattr(self, "_ingest_raw_data_streams"):
+            y_t = self._ingest_raw_data_streams()
+        else:
+            meas_dim = self.config.state_estimator_config.measurement_dimension
+            y_t = np.random.rand(meas_dim)
+            self.logger.warning(
+                "Keine Methode '_ingest_raw_data_streams' gefunden. Verwende zufällige Messdaten für StateEstimator."
+            )
+
+        try:
+            mu_t, P_t = self.state_estimator.estimate_state(u_t_minus_1, y_t)
+            self.mu_t = mu_t
+            self.P_t = P_t
+        except Exception as e:
+            self.logger.error(f"Fehler in der Stage 'state_estimation': {e}", exc_info=True)
 
     def stage_need_estimation(self):
         """Stage: Konsumenten aktualisieren Bedarfe, dann Aggregation."""

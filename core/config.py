@@ -296,6 +296,16 @@ class LoggingConfig(BaseModel):
     log_format: str = '%(asctime)s - [%(name)s] %(levelname)s - %(message)s'
 
 
+class StateEstimatorConfig(BaseModel):
+    """Konfiguration für den StateEstimator (AEKF)."""
+    enabled: bool = Field(True, description="Aktiviert oder deaktiviert die Zustandsschätzung.")
+    state_dimension: int = Field(20, ge=1, description="Dimension n des Systemzustandsvektors x_t.")
+    measurement_dimension: int = Field(50, ge=1, description="Dimension p des Messvektors y_t.")
+    ensemble_size: int = Field(100, ge=10, description="Anzahl der Partikel (Ensemble-Members) N für den AEKF.")
+    initial_process_noise_q: float = Field(0.01, gt=0, description="Initialer Skalar für die Prozessrauschen-Kovarianz Q.")
+    initial_measurement_noise_r: float = Field(0.1, gt=0, description="Initialer Skalar für die Messrauschen-Kovarianz R.")
+
+
 class EconomicModelConfig(BaseModel):
     """Minimal container for high level model sub-configs used in tests."""
     producer_params: ProducerParamsConfig = Field(default_factory=ProducerParamsConfig)
@@ -315,6 +325,7 @@ class SimulationConfig(BaseModel):
     regional_config: RegionalConfig = Field(default_factory=RegionalConfig)
     admm_config: ADMMConfig = Field(default_factory=ADMMConfig)
     logging_config: LoggingConfig = Field(default_factory=LoggingConfig)
+    state_estimator_config: StateEstimatorConfig = Field(default_factory=StateEstimatorConfig)
 
     # --- Grundlegende Simulation ---
     simulation_name: str = "Impaler_Default_Run"
@@ -339,7 +350,7 @@ class SimulationConfig(BaseModel):
 
     # --- Simulation-Stages ---
     stages: List[str] = [
-        "resource_regen", "need_estimation", "infrastructure_development",
+        "resource_regen", "state_estimation", "need_estimation", "infrastructure_development",
         "system5_policy", "system4_strategic_planning", "system4_tactical_planning",
         "system3_aggregation", "system2_coordination", "system3_feedback",
         "system1_operations", "local_production_planning", "admm_update",
