@@ -32,28 +32,21 @@ default_config = SimulationConfig().to_dict()
 # Note: The new StageManager allows dynamic registration of stages,
 # but we keep this list for backward compatibility
 SIMULATION_STAGES = [
-    "resource_regen",              # Resource agent regeneration
-    "need_estimation",             # Update consumer needs
-    "infrastructure_development",  # Update infrastructure capacities
-    "system5_policy",              # High-level policy adjustments
-    "system4_strategic_planning",  # Long-term planning
-    "system4_tactical_planning",   # Medium-term planning
-    "system3_aggregation",         # Aggregate regional data
-    "system2_coordination",        # Inter-regional coordination
-    "system3_feedback",            # Feedback to regions
-    "system1_operations",          # Operational execution preparation
-    "local_production_planning",   # Producer-level planning
-    "admm_update",                 # ADMM constraint resolution
-    "production_execution",        # Actual production execution
-    "distribution",                # Product distribution
-    "consumption",                 # Consumer consumption
-    "environmental_impact",        # Calculate environmental impacts
-    "technology_progress",         # Update technology levels
-    "crisis_management",           # Handle active crises
-    "welfare_assessment",          # Calculate welfare metrics
-    "learning_adaptation",         # ML-based adaptation
-    "vsm_reconfiguration",         # Dynamic VSM reconfiguration
-    "bookkeeping"                  # Final data collection
+    "resource_regen",              # Umwelt regeneriert sich
+    "need_estimation",             # Konsumentenbedarfe werden aktualisiert
+    "state_estimation",            # AEKF schätzt den globalen Zustand
+    "system5_policy",              # S5 setzt übergeordnete Ziele
+    "system4_strategic_planning_admm",  # S4 führt ADMM aus
+    "broadcast_plan_and_prices",   # Plan und Preise an Agenten
+    "system3_coordination",        # Regionale Vorgaben setzen
+    "system2_coordination",        # Inter-regionale Koordination
+    "local_rl_execution",          # RL-Agenten wählen Aktionen
+    "production_execution",        # Producer führen Aktionen aus
+    "consumption",                 # Konsumenten verbrauchen Güter
+    "environmental_impact",        # Umweltauswirkungen berechnen
+    "crisis_management",           # Krisen werden gehandhabt
+    "welfare_assessment",          # Wohlfahrt und Gini
+    "bookkeeping"                  # Datensammlung
 ]
 
 # Export main classes

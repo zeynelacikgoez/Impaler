@@ -876,157 +876,25 @@ class EconomicModel:
 
     def _register_default_stages(self) -> None:
         """Registriert die Standard-Simulationsphasen mit Abhängigkeiten."""
-        self.logger.info("Registriere Simulationsphasen...")
-        stages_config = self.config.stages  # Nutze die Reihenfolge/Liste aus der Config
+        self.logger.info("Registriere Simulationsphasen gemäß RADRO-ADMM-Architektur...")
+        stages_config = self.config.stages
 
-        # Definiere Stages mit Namen, Funktion, Parallelisierbarkeit und Standard-Reihenfolge/Abhängigkeiten
-        # Die 'order' und 'depends_on' könnten auch aus der Config kommen, falls gewünscht.
-        # Hier verwenden wir eine vordefinierte Logik.
         stage_definitions = [
             ("resource_regen", self.stage_resource_regen, True, 10, []),
-            (
-                "state_estimation",
-                self.stage_state_estimation,
-                False,
-                15,
-                ["resource_regen"],
-            ),
             ("need_estimation", self.stage_need_estimation, True, 20, []),
-            (
-                "infrastructure_development",
-                self.stage_infrastructure_development,
-                True,
-                30,
-                [],
-            ),
-            (
-                "system5_policy",
-                self.stage_system5_policy,
-                False,
-                40,
-                ["need_estimation", "infrastructure_development"],
-            ),
-            (
-                "system4_strategic_planning",
-                self.stage_system4_strategic_planning,
-                False,
-                50,
-                ["system5_policy", "need_estimation", "state_estimation"],
-            ),
-            (
-                "system4_tactical_planning",
-                self.stage_system4_tactical_planning,
-                False,
-                60,
-                ["system4_strategic_planning"],
-            ),
-            (
-                "system3_aggregation",
-                self.stage_system3_aggregation,
-                False,
-                70,
-                ["system4_tactical_planning"],
-            ),
-            (
-                "system2_coordination",
-                self.stage_system2_coordination,
-                False,
-                80,
-                ["system3_aggregation"],
-            ),
-            (
-                "system3_feedback",
-                self.stage_system3_feedback,
-                False,
-                90,
-                ["system2_coordination"],
-            ),
-            (
-                "system1_operations",
-                self.stage_system1_operations,
-                False,
-                100,
-                ["system3_feedback"],
-            ),
-            (
-                "local_production_planning",
-                self.stage_local_production_planning,
-                True,
-                110,
-                ["system1_operations"],
-            ),
-            (
-                "admm_update",
-                self.stage_admm_update,
-                False,
-                120,
-                ["local_production_planning"],
-            ),
-            (
-                "production_execution",
-                self.stage_production_execution,
-                True,
-                130,
-                ["admm_update", "local_production_planning"],
-            ),
-            # ("distribution", self.stage_distribution, False, 140, ["production_execution"]), # ENTFERNT
-            (
-                "consumption",
-                self.stage_consumption,
-                True,
-                150,
-                ["production_execution"],
-            ),  # Hängt jetzt von Produktion ab
-            (
-                "environmental_impact",
-                self.stage_environmental_impact,
-                False,
-                160,
-                ["production_execution"],
-            ),
-            (
-                "technology_progress",
-                self.stage_technology_progress,
-                True,
-                170,
-                ["production_execution"],
-            ),
-            ("crisis_management", self.stage_crisis_management, False, 180, []),
-            (
-                "welfare_assessment",
-                self.stage_welfare_assessment,
-                False,
-                190,
-                ["consumption"],
-            ),
-            (
-                "learning_adaptation",
-                self.stage_learning_adaptation,
-                False,
-                200,
-                ["welfare_assessment"],
-            ),
-            (
-                "vsm_reconfiguration",
-                self.stage_vsm_reconfiguration,
-                False,
-                210,
-                ["learning_adaptation"],
-            ),
-            (
-                "bookkeeping",
-                self.stage_bookkeeping,
-                False,
-                220,
-                ["vsm_reconfiguration", "welfare_assessment", "environmental_impact"],
-            ),
-            (
-                "evaluate_governance_mode",
-                self.stage_evaluate_governance_mode,
-                False,
-                230,
-                ["bookkeeping"],
-            ),
+            ("state_estimation", self.stage_state_estimation, False, 30, ["need_estimation"]),
+            ("system5_policy", self.stage_system5_policy, False, 40, ["state_estimation"]),
+            ("system4_strategic_planning_admm", self.stage_system4_strategic_planning, False, 50, ["system5_policy"]),
+            ("broadcast_plan_and_prices", self.stage_broadcast_plan_and_prices, False, 60, ["system4_strategic_planning_admm"]),
+            ("system3_coordination", self.stage_system3_coordination, False, 70, ["broadcast_plan_and_prices"]),
+            ("system2_coordination", self.stage_system2_coordination, False, 80, ["system3_coordination"]),
+            ("local_rl_execution", self.stage_local_rl_execution, True, 90, ["broadcast_plan_and_prices"]),
+            ("production_execution", self.stage_production_execution, True, 100, ["local_rl_execution"]),
+            ("consumption", self.stage_consumption, True, 110, ["production_execution"]),
+            ("environmental_impact", self.stage_environmental_impact, False, 120, ["production_execution", "consumption"]),
+            ("crisis_management", self.stage_crisis_management, False, 130, []),
+            ("welfare_assessment", self.stage_welfare_assessment, False, 140, ["consumption"]),
+            ("bookkeeping", self.stage_bookkeeping, False, 150, ["welfare_assessment", "environmental_impact"]),
         ]
 
         # Registriere nur die Stages, die in der Konfiguration aufgeführt sind
@@ -1199,15 +1067,31 @@ class EconomicModel:
                 production_targets=optimal_plan,
             )
 
-            self.logger.info("Verteile Schattenpreise an Producer...")
-            for producer in self.producers:
-                if hasattr(producer, 'receive_shadow_prices'):
-                    producer_prices = shadow_prices.get(producer.unique_id, {})
-                    producer.receive_shadow_prices(producer_prices)
+            # Speicherung der Schattenpreise zur späteren Verteilung
+            self.shadow_prices = shadow_prices
 
             # self.u_t = self._convert_plan_to_control_vector(optimal_plan)
         else:
             self.logger.warning("System4Planner oder seine run_admm_optimization Methode nicht gefunden.")
+
+    def stage_broadcast_plan_and_prices(self):
+        """
+        Stage: Verteilt den finalen strategischen Plan (Produktionsziele) und die
+        Schattenpreise an die operativen Agenten.
+        """
+        if self.current_strategic_plan is None or not hasattr(self, 'shadow_prices'):
+            self.logger.warning("Kein strategischer Plan oder keine Schattenpreise zum Verteilen vorhanden.")
+            return
+
+        self.logger.info("Verteile finalen Plan und Schattenpreise an die Agenten...")
+
+        if self.system3manager:
+            self.system3manager.receive_strategic_directives(self.current_strategic_plan)
+
+        for producer in self.producers:
+            if hasattr(producer, 'receive_shadow_prices'):
+                producer_prices = self.shadow_prices.get(producer.unique_id, {})
+                producer.receive_shadow_prices(producer_prices)
 
     def stage_system4_tactical_planning(self):
         if self.system4planner and hasattr(self.system4planner, "step_stage"):
@@ -1215,7 +1099,7 @@ class EconomicModel:
                 "system4_tactical_planning"
             )  # Hier werden Pläne erstellt
 
-    def stage_system3_aggregation(self):
+    def stage_system3_coordination(self):
         if self.system3manager and hasattr(self.system3manager, "step_stage"):
             self.system3manager.step_stage("system3_aggregation")
 
@@ -1233,21 +1117,24 @@ class EconomicModel:
                 "system1_operations"
             )  # Name der Methode in S1
 
-    def stage_local_production_planning(self):
-        # Funktion für einen einzelnen Producer
-        def _plan_single_producer(producer):
-            if hasattr(producer, "step_stage"):
-                producer.step_stage("local_production_planning")
-            # Ggf. Bedarf zurückgeben für ADMM
+    def stage_local_rl_execution(self):
+        """
+        Stage: Jeder RL-fähige Producer wählt seine nächste Aktion.
+        Dies ersetzt das alte 'local_production_planning'.
+        """
+        self.logger.info("Stage: Lokale RL-Ausführung (Aktionsauswahl)...")
 
-        # Führe parallel oder sequentiell aus
+        def _select_action_single_producer(producer):
+            if getattr(producer, 'rl_mode', False) and hasattr(producer, 'choose_next_action'):
+                producer.choose_next_action()
+
         if self.parallel_execution and len(self.producers) > 10:
             Parallel(n_jobs=self.config.num_workers)(
-                delayed(_plan_single_producer)(p) for p in self.producers
+                delayed(_select_action_single_producer)(p) for p in self.producers
             )
         else:
             for p in self.producers:
-                _plan_single_producer(p)
+                _select_action_single_producer(p)
 
     def stage_admm_update(self):
         if (
@@ -1268,6 +1155,11 @@ class EconomicModel:
         ) -> Tuple[str, Dict[str, float], Dict[str, float]]:
             produced_output = {}
             consumed_resources = {}
+            if hasattr(producer, "pending_rl_action") and producer.pending_rl_action is not None:
+                try:
+                    producer.do_rl_action(producer.pending_rl_action)
+                finally:
+                    producer.pending_rl_action = None
             if hasattr(producer, "step_stage"):
                 producer.step_stage("production_execution")
             if hasattr(producer, "get_produced_output"):  # Holt Output UND leert Lager
