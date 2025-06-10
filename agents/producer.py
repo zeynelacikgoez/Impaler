@@ -368,9 +368,14 @@ class ProducerAgent:
         self.capacity_utilization = 0.0
         self.productivity_trend = deque(maxlen=10)
         self._last_resource_needs = {}
+        self._last_consumption_dict: Dict[str, float] = {}
+        self._last_production_dict: Dict[str, float] = {}
         # Parameters for simple federated learning updates
         self.local_model_params = np.zeros(3, dtype=np.float32)
         self.local_solution = defaultdict(float)
+
+        # Global scarcity signals from System 4
+        self.shadow_prices: Dict[str, float] = {}
 
         # RL-Komponente
         self.rl_mode = enable_rl and RL_AVAILABLE # RL_AVAILABLE prüft q_learning.py
@@ -386,9 +391,10 @@ class ProducerAgent:
         if self.rl_mode:
             # Definiere state_dim basierend auf der Logik in get_state_for_rl
             # Basis: util, avg_eff, maint, shortage, tech, budget = 6
-            # Key Products: num_key_products_rl * 1 (fulfillment) = num_key_products_rl
+            # Key Products: num_key_products_rl * 1 (fulfillment)
             # Trends: eff_trend, maint_trend = 2
-            _temp_state_dim = 6 + self.num_key_products_rl + 2
+            plan_goods_dim = len(getattr(self.model.config, "plan_relevant_goods", getattr(self.model.config, "goods", [])))
+            _temp_state_dim = 6 + self.num_key_products_rl + 2 + plan_goods_dim
             _action_dim = 6 # Entspricht den Aktionen in do_rl_action
 
             if TORCH_AVAILABLE and self.rl_config.get("use_dqn", True): # Default zu DQN wenn möglich
@@ -764,6 +770,7 @@ class ProducerAgent:
         logger = self.logger # Cache logger
         logger.debug(f"Producer {self.unique_id}: Starte Produktionsausführung...")
         self.total_output_this_step = 0.0
+        self._last_production_dict = defaultdict(float)
         total_emissions_this_step = defaultdict(float)
         current_step = getattr(self.model, 'current_step', 0)
         consumed_globally = defaultdict(float) # Für Verbrauchs-History
@@ -820,6 +827,7 @@ class ProducerAgent:
             output_stock[line.output_good] += output_amount
             self.cumulative_output[line.output_good] += output_amount # self.cumulative_output is specific, keep self
             self.total_output_this_step += output_amount
+            self._last_production_dict[line.output_good] += output_amount
 
             line_emissions = line.calculate_emissions_for_output(output_amount)
             for emission_type, amount in line_emissions.items():
@@ -841,6 +849,8 @@ class ProducerAgent:
 
         for resource, amount in consumed_globally.items():
             self.resource_consumption_history[resource].append(amount)
+
+        self._last_consumption_dict = dict(consumed_globally)
 
         logger.info(f"Producer {self.unique_id}: Produktion ausgeführt. Gesamt-Output: {self.total_output_this_step:.2f}. "
                             f"Kap-Auslastung: {self.capacity_utilization:.1%}. "
@@ -1248,6 +1258,11 @@ class ProducerAgent:
         self.local_solution = solution.copy()
         return solution
 
+    def receive_shadow_prices(self, prices: Dict[str, float]):
+        """Store global scarcity signals provided by System 4."""
+        self.shadow_prices = prices
+        self.logger.debug(f"Producer {self.unique_id} received shadow prices: {prices}")
+
     def _calculate_local_cost(self, x_dict: Dict[str, float], lambdas: Dict[str, float], alpha_params: Dict[str, float]) -> float:
         """Berechnet die detaillierten lokalen Produktionskosten für eine gegebene Produktionsmenge."""
         self.logger.debug(f"Producer {self.unique_id}: Berechne lokale Kosten für Plan {x_dict}...")
@@ -1319,6 +1334,13 @@ class ProducerAgent:
                     production_per_line[line] += share
 
         return production_per_line
+
+    def _get_best_line_for_good(self, good: str) -> Optional['ProductionLine']:
+        """Helper to find a production line for a given good."""
+        for line in self.production_lines:
+            if line.output_good == good:
+                return line
+        return None
 
     def _calculate_admm_penalty(self, x_dict: Dict[str, float], z_vals: Dict[str, float], u_vals: Dict[str, float], rho: float) -> float:
         """Berechnet den ADMM Penalty Term."""
@@ -1480,6 +1502,14 @@ class ProducerAgent:
             maint_change = self.maintenance_status - self._prev_maintenance_status
             maint_trend = np.clip(maint_change / self.rl_config.get("maint_trend_norm_factor", 0.05), -1.0, 1.0)
         state_parts.append(maint_trend)
+
+        # 9. Wichtigste Schattenpreise
+        plan_goods = getattr(self.model.config, "plan_relevant_goods", getattr(self.model.config, "goods", []))
+        price_norm_factor = self.rl_config.get("price_norm_factor", 10.0)
+        for good in plan_goods:
+            price = self.shadow_prices.get(good, 0.0)
+            normalized_price = np.clip(price / price_norm_factor, -1.0, 1.0)
+            state_parts.append(normalized_price)
         
         final_state = np.array(state_parts, dtype=np.float32)
         
@@ -1595,18 +1625,22 @@ class ProducerAgent:
         elif avg_eff_change < 0:
             reward -= cfg.get("avg_eff_decrease_penalty", 0.2) * abs(avg_eff_change * 10)
 
-        # 3. Ressourcenschonung (indirekt über Effizienz, oder direkter)
-        # Hier als Beispiel: Strafe für hohe Knappheit im letzten Schritt
-        # (shortage ist Teil des States, aber hier als direkter Reward-Term)
-        # Die Logik hier ist etwas redundant zur State-Definition, könnte verfeinert werden.
-        # Annahme: state_parts[3] ist 'shortage'
-        # current_shortage = self.get_state_for_rl()[3] # Hole aktuelle Knappheit
-        # reward -= cfg.get("resource_shortage_penalty", 0.3) * current_shortage
+        # 3. Ökonomische Rationalität basierend auf Schattenpreisen
+        economic_rationality_reward = 0.0
+        resource_cost = 0.0
+        last_consumption = self._get_last_step_consumption()
+        for resource, amount in last_consumption.items():
+            price = self.shadow_prices.get(resource, 0.0)
+            resource_cost += amount * price
 
-        # Alternative: Belohnung für geringen Input pro Output-Einheit (komplexer)
-        # Example: if total_output > 0 and self._last_resource_needs:
-        #   input_per_output = sum(self._last_resource_needs.values()) / self.total_output_this_step
-        #   reward += cfg.get("input_efficiency_reward", 0.1) * (1 / (1 + input_per_output)) # Inverse Beziehung
+        revenue = 0.0
+        last_production = self._get_last_step_production()
+        for good, amount in last_production.items():
+            price = self.shadow_prices.get(good, 0.0)
+            revenue += amount * price
+
+        economic_rationality_reward = revenue - resource_cost
+        reward += cfg.get("economic_rationality_weight", 0.8) * economic_rationality_reward
 
         # 4. Resilienz (Wartungsstatus)
         maint_change = self.maintenance_status - self._prev_maintenance_status
@@ -1628,7 +1662,9 @@ class ProducerAgent:
         reward_clip_max = cfg.get("reward_clip_max", 5.0)
         reward = np.clip(reward, reward_clip_min, reward_clip_max)
 
-        self.logger.debug(f"Producer {self.unique_id} RL Reward: {reward:.3f}")
+        self.logger.debug(
+            f"Producer {self.unique_id} RL Reward: {reward:.3f} (Economic: {economic_rationality_reward:.3f})"
+        )
         return float(reward)
 
 
@@ -1673,6 +1709,20 @@ class ProducerAgent:
                 queue_length += (line.target_output - line.actual_output)
         self.task_queue_length = int(round(queue_length)) # Ensure it's an integer
         return self.task_queue_length
+
+    def _get_last_step_consumption(self) -> Dict[str, float]:
+        """Return resources consumed in the previous step."""
+        if hasattr(self, "_last_consumption_dict") and self._last_consumption_dict:
+            return self._last_consumption_dict
+        consumption = defaultdict(float)
+        for resource, hist in self.resource_consumption_history.items():
+            if hist:
+                consumption[resource] = hist[-1]
+        return dict(consumption)
+
+    def _get_last_step_production(self) -> Dict[str, float]:
+        """Return production amounts from the last step per good."""
+        return getattr(self, "_last_production_dict", {})
 
     # --- Hilfsmethoden ---
 
