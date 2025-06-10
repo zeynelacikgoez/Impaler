@@ -349,16 +349,23 @@ class SimulationConfig(BaseModel):
     specific_agents: List[SpecificAgentConfig] = Field(default_factory=list)
 
     # --- Simulation-Stages ---
-    stages: List[str] = [
-        "resource_regen", "state_estimation", "need_estimation", "infrastructure_development",
-        "system5_policy", "system4_strategic_planning", "system4_tactical_planning",
-        "system3_aggregation", "system2_coordination", "system3_feedback",
-        "system1_operations", "local_production_planning", "admm_update",
-        "production_execution", "distribution", "consumption",
-        "environmental_impact", "technology_progress", "crisis_management",
-        "welfare_assessment", "learning_adaptation", "vsm_reconfiguration",
-        "bookkeeping"
-    ]
+    stages: List[str] = Field(default_factory=lambda: [
+        "resource_regen",
+        "need_estimation",
+        "state_estimation",
+        "system5_policy",
+        "system4_strategic_planning_admm",
+        "broadcast_plan_and_prices",
+        "system3_coordination",
+        "system2_coordination",
+        "local_rl_execution",
+        "production_execution",
+        "consumption",
+        "environmental_impact",
+        "crisis_management",
+        "welfare_assessment",
+        "bookkeeping",
+    ])
 
     # --- Parallelisierung ---
     parallel_execution: bool = False

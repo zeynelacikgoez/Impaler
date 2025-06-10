@@ -276,6 +276,7 @@ class ProducerAgent:
     _prev_tech_level: float
     _prev_avg_efficiency: float
     _prev_maintenance_status: float
+    pending_rl_action: Optional[int]
 
     def __init__(
         self,
@@ -382,6 +383,7 @@ class ProducerAgent:
         self.rl_agent = None
         self._rl_state_cache = None
         self._last_rl_state = None # Initialisiere _last_rl_state
+        self.pending_rl_action = None
 
         # RL-Parameter aus kwargs holen, mit Standardwerten
         self.rl_config = kwargs.get("rl_params", {})
@@ -487,11 +489,11 @@ class ProducerAgent:
         current_step = getattr(self.model, "current_step", 0)
 
         # Update effektive Effizienz zu Beginn relevanter Phasen
-        if stage in ["local_production_planning", "production_execution"]:
+        if stage in ["local_rl_execution", "production_execution"]:
             self._update_effective_efficiencies()
 
-        if stage == "local_production_planning":
-            self.plan_local_production()
+        if stage == "local_rl_execution":
+            self.choose_next_action()
         elif stage == "production_execution":
             self.execute_production()
         elif stage == "distribute_output": # Stage umbenannt / hinzugefügt?
@@ -1436,6 +1438,34 @@ class ProducerAgent:
         self._rl_state_cache = (current_state, action, reward) # Speichere Zustand, Aktion, und den gerade berechneten Reward
 
         # Exploration decay (für DQN, bei Tabular passiert es in learn())
+        if isinstance(self.rl_agent, DeepQLearningAgent):
+            self.rl_agent.decay_exploration()
+
+    def choose_next_action(self) -> None:
+        """Wählt eine Aktion aus der aktuellen RL-Policy und speichert sie."""
+        if not self.rl_mode or not self.rl_agent:
+            return
+
+        current_state = self.get_state_for_rl()
+        reward = self.calculate_rl_reward()
+
+        if self._last_rl_state is not None and self._rl_state_cache is not None:
+            _, last_action, _ = self._rl_state_cache
+            if isinstance(self.rl_agent, DeepQLearningAgent):
+                self.rl_agent.store_transition(self._last_rl_state, last_action, reward, current_state, False)
+                if len(self.rl_agent.memory) >= self.rl_agent.batch_size:
+                    loss = self.rl_agent.learn()
+                    if loss is not None:
+                        self.logger.debug(f"Producer {self.unique_id} DQN learn. Loss: {loss:.4f}")
+            elif isinstance(self.rl_agent, QLearningAgent) and (hasattr(self.rl_agent, 'q_table') or hasattr(self.rl_agent, 'policy_net')):
+                self.rl_agent.learn(self._last_rl_state, last_action, reward, current_state, False)
+
+        action = self.rl_agent.choose_action(current_state)
+        self.pending_rl_action = action
+
+        self._last_rl_state = current_state
+        self._rl_state_cache = (current_state, action, reward)
+
         if isinstance(self.rl_agent, DeepQLearningAgent):
             self.rl_agent.decay_exploration()
 
