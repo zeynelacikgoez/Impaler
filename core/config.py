@@ -350,14 +350,30 @@ class SimulationConfig(BaseModel):
 
     # --- Simulation-Stages ---
     stages: List[str] = [
-        "resource_regen", "state_estimation", "need_estimation", "infrastructure_development",
-        "system5_policy", "system4_strategic_planning", "system4_tactical_planning",
-        "system3_aggregation", "system2_coordination", "system3_feedback",
-        "system1_operations", "local_production_planning", "admm_update",
-        "production_execution", "distribution", "consumption",
-        "environmental_impact", "technology_progress", "crisis_management",
-        "welfare_assessment", "learning_adaptation", "vsm_reconfiguration",
-        "bookkeeping"
+        "resource_regen",
+        "state_estimation",
+        "need_estimation",
+        "infrastructure_development",
+        "system5_policy",
+        "system4_strategic_planning_admm",
+        "system4_tactical_planning",
+        "system3_aggregation",
+        "system2_coordination",
+        "system3_feedback",
+        "broadcast_plan_and_prices",
+        "system1_operations",
+        "local_production_planning",
+        "local_rl_execution",
+        "admm_update",
+        "production_execution",
+        "consumption",
+        "environmental_impact",
+        "technology_progress",
+        "crisis_management",
+        "welfare_assessment",
+        "learning_adaptation",
+        "vsm_reconfiguration",
+        "bookkeeping",
     ]
 
     # --- Parallelisierung ---
