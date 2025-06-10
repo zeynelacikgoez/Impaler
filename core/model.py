@@ -877,180 +877,102 @@ class EconomicModel:
     def _register_default_stages(self) -> None:
         """Registriert die Standard-Simulationsphasen mit Abhängigkeiten."""
         self.logger.info("Registriere Simulationsphasen...")
-        stages_config = self.config.stages  # Nutze die Reihenfolge/Liste aus der Config
+        stages_config = self.config.stages  # Reihenfolge aus der Config
 
-        # Definiere Stages mit Namen, Funktion, Parallelisierbarkeit und Standard-Reihenfolge/Abhängigkeiten
-        # Die 'order' und 'depends_on' könnten auch aus der Config kommen, falls gewünscht.
-        # Hier verwenden wir eine vordefinierte Logik.
-        stage_definitions = [
-            ("resource_regen", self.stage_resource_regen, True, 10, []),
-            (
-                "state_estimation",
-                self.stage_state_estimation,
-                False,
-                15,
-                ["resource_regen"],
-            ),
-            ("need_estimation", self.stage_need_estimation, True, 20, []),
-            (
-                "infrastructure_development",
+        # Mapping Stage-Name -> (Funktion, parallelisierbar)
+        stage_func_map: Dict[str, Tuple[Callable[[], Any], bool]] = {
+            "resource_regen": (self.stage_resource_regen, True),
+            "state_estimation": (self.stage_state_estimation, False),
+            "need_estimation": (self.stage_need_estimation, True),
+            "infrastructure_development": (
                 self.stage_infrastructure_development,
                 True,
-                30,
-                [],
             ),
-            (
-                "system5_policy",
-                self.stage_system5_policy,
-                False,
-                40,
-                ["need_estimation", "infrastructure_development"],
-            ),
-            (
-                "system4_strategic_planning",
-                self.stage_system4_strategic_planning,
-                False,
-                50,
-                ["system5_policy", "need_estimation", "state_estimation"],
-            ),
-            (
-                "system4_tactical_planning",
-                self.stage_system4_tactical_planning,
-                False,
-                60,
-                ["system4_strategic_planning"],
-            ),
-            (
-                "system3_aggregation",
-                self.stage_system3_aggregation,
-                False,
-                70,
-                ["system4_tactical_planning"],
-            ),
-            (
-                "system2_coordination",
-                self.stage_system2_coordination,
-                False,
-                80,
-                ["system3_aggregation"],
-            ),
-            (
-                "system3_feedback",
-                self.stage_system3_feedback,
-                False,
-                90,
-                ["system2_coordination"],
-            ),
-            (
-                "system1_operations",
-                self.stage_system1_operations,
-                False,
-                100,
-                ["system3_feedback"],
-            ),
-            (
-                "local_production_planning",
-                self.stage_local_production_planning,
-                True,
-                110,
-                ["system1_operations"],
-            ),
-            (
-                "admm_update",
-                self.stage_admm_update,
-                False,
-                120,
-                ["local_production_planning"],
-            ),
-            (
-                "production_execution",
-                self.stage_production_execution,
-                True,
-                130,
-                ["admm_update", "local_production_planning"],
-            ),
-            # ("distribution", self.stage_distribution, False, 140, ["production_execution"]), # ENTFERNT
-            (
-                "consumption",
-                self.stage_consumption,
-                True,
-                150,
-                ["production_execution"],
-            ),  # Hängt jetzt von Produktion ab
-            (
-                "environmental_impact",
-                self.stage_environmental_impact,
-                False,
-                160,
-                ["production_execution"],
-            ),
-            (
-                "technology_progress",
-                self.stage_technology_progress,
-                True,
-                170,
-                ["production_execution"],
-            ),
-            ("crisis_management", self.stage_crisis_management, False, 180, []),
-            (
-                "welfare_assessment",
-                self.stage_welfare_assessment,
-                False,
-                190,
-                ["consumption"],
-            ),
-            (
-                "learning_adaptation",
-                self.stage_learning_adaptation,
-                False,
-                200,
-                ["welfare_assessment"],
-            ),
-            (
-                "vsm_reconfiguration",
-                self.stage_vsm_reconfiguration,
-                False,
-                210,
-                ["learning_adaptation"],
-            ),
-            (
-                "bookkeeping",
-                self.stage_bookkeeping,
-                False,
-                220,
-                ["vsm_reconfiguration", "welfare_assessment", "environmental_impact"],
-            ),
-            (
-                "evaluate_governance_mode",
-                self.stage_evaluate_governance_mode,
-                False,
-                230,
-                ["bookkeeping"],
-            ),
-        ]
+            "system5_policy": (self.stage_system5_policy, False),
+            "system4_strategic_planning": (self.stage_system4_strategic_planning, False),
+            "system4_tactical_planning": (self.stage_system4_tactical_planning, False),
+            "system3_aggregation": (self.stage_system3_aggregation, False),
+            "system2_coordination": (self.stage_system2_coordination, False),
+            "system3_feedback": (self.stage_system3_feedback, False),
+            "system1_operations": (self.stage_system1_operations, False),
+            "local_production_planning": (self.stage_local_production_planning, True),
+            "admm_update": (self.stage_admm_update, False),
+            "production_execution": (self.stage_production_execution, True),
+            "consumption": (self.stage_consumption, True),
+            "environmental_impact": (self.stage_environmental_impact, False),
+            "technology_progress": (self.stage_technology_progress, True),
+            "crisis_management": (self.stage_crisis_management, False),
+            "welfare_assessment": (self.stage_welfare_assessment, False),
+            "learning_adaptation": (self.stage_learning_adaptation, False),
+            "vsm_reconfiguration": (self.stage_vsm_reconfiguration, False),
+            "bookkeeping": (self.stage_bookkeeping, False),
+            "evaluate_governance_mode": (self.stage_evaluate_governance_mode, False),
+            # Neue generische Stages (Mapping auf bestehende Funktionen)
+            "planning": (self.stage_system4_strategic_planning, False),
+            "broadcasting": (self.stage_system3_feedback, False),
+            "rl_execution": (self.stage_production_execution, True),
+        }
 
-        # Registriere nur die Stages, die in der Konfiguration aufgeführt sind
-        enabled_stage_names = set(stages_config)
-        for name, func, parallel, order, deps in stage_definitions:
-            if name in enabled_stage_names:
-                try:
-                    # Filtere Abhängigkeiten, die nicht aktiviert sind
-                    enabled_deps = [d for d in deps if d in enabled_stage_names]
-                    self.stage_manager.add_stage(
-                        name=name,
-                        func=func,
-                        parallelizable=parallel,
-                        order=order,
-                        depends_on=enabled_deps,
-                    )
-                except ValueError as e:
-                    self.logger.error(
-                        f"Fehler beim Registrieren der Stage '{name}': {e}"
-                    )
-                    raise
+        # Abhängigkeitsdefinitionen
+        dependency_map: Dict[str, List[str]] = {
+            "state_estimation": ["resource_regen"],
+            "planning": ["state_estimation"],
+            "broadcasting": ["planning"],
+            "rl_execution": ["broadcasting"],
+            "system5_policy": ["need_estimation", "infrastructure_development"],
+            "system4_strategic_planning": [
+                "system5_policy",
+                "need_estimation",
+                "state_estimation",
+            ],
+            "system4_tactical_planning": ["system4_strategic_planning"],
+            "system3_aggregation": ["system4_tactical_planning"],
+            "system2_coordination": ["system3_aggregation"],
+            "system3_feedback": ["system2_coordination"],
+            "system1_operations": ["system3_feedback"],
+            "local_production_planning": ["system1_operations"],
+            "admm_update": ["local_production_planning"],
+            "production_execution": ["admm_update", "local_production_planning"],
+            "consumption": ["production_execution"],
+            "environmental_impact": ["production_execution"],
+            "technology_progress": ["production_execution"],
+            "welfare_assessment": ["consumption"],
+            "learning_adaptation": ["welfare_assessment"],
+            "vsm_reconfiguration": ["learning_adaptation"],
+            "bookkeeping": [
+                "vsm_reconfiguration",
+                "welfare_assessment",
+                "environmental_impact",
+            ],
+            "evaluate_governance_mode": ["bookkeeping"],
+        }
+
+        registered: List[str] = []
+        for order, name in enumerate(stages_config, start=1):
+            if name not in stage_func_map:
+                self.logger.warning(f"Stage '{name}' unbekannt, wird übersprungen.")
+                continue
+
+            func, parallel = stage_func_map[name]
+            deps = [d for d in dependency_map.get(name, []) if d in stages_config]
+
+            try:
+                self.stage_manager.add_stage(
+                    name=name,
+                    func=func,
+                    parallelizable=parallel,
+                    order=order * 10,
+                    depends_on=deps,
+                )
+                registered.append(name)
+            except ValueError as e:
+                self.logger.error(
+                    f"Fehler beim Registrieren der Stage '{name}': {e}"
+                )
+                raise
 
         self.logger.info(
-            f"Simulationsphasen registriert: {', '.join(s['name'] for s in self.stage_manager.list_stages())}"
+            f"Simulationsphasen registriert: {', '.join(registered)}"
         )
 
     def step(self) -> bool:
