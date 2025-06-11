@@ -378,6 +378,25 @@ class ProducerAgent:
         # Global scarcity signals from System 4
         self.shadow_prices: Dict[str, float] = {}
 
+        # NEUE ATTRIBUTE FÜR STRATEGISCHES VERHALTEN
+        # Compliance-Level: 1.0 = perfekt konform, 0.0 = ignoriert alle Vorgaben
+        self.compliance_level: float = np.clip(
+            float(kwargs.get("compliance_level", random.uniform(0.85, 1.0))), 0.0, 1.0
+        )
+
+        # Hortungs-Neigung: Faktor, wie viel der ungenutzten Ressourcen behalten werden
+        self.hoarding_propensity: float = np.clip(
+            float(kwargs.get("hoarding_propensity", random.uniform(0.05, 0.2))), 0.0, 1.0
+        )
+
+        # Fähigkeit, Kapazität zu verbergen (Faktor, um den die wahre Kapazität unterberichtet wird)
+        self.capacity_misreporting_factor: float = np.clip(
+            float(kwargs.get("capacity_misreporting_factor", random.uniform(0.0, 0.1))), 0.0, 0.5
+        )
+
+        # Interner Speicher für gehortete Ressourcen
+        self.hoarded_resources: DefaultDict[str, float] = defaultdict(float)
+
         # RL-Komponente
         self.rl_mode = enable_rl and RL_AVAILABLE # RL_AVAILABLE prüft q_learning.py
         self.rl_agent = None
@@ -429,8 +448,14 @@ class ProducerAgent:
         # Initialisierung abschließen
         self._update_effective_efficiencies()
         self.initialize_production_lines() # Kapazität verteilen
-        self.logger.info(f"ProducerAgent {self.unique_id} initialisiert in Region {self.region_id} "
-                         f"mit Kapazität {self.productive_capacity:.1f} und Tech-Level {self.tech_level:.2f}.")
+        self.logger.info(
+            f"ProducerAgent {self.unique_id} initialisiert in Region {self.region_id} "
+            f"mit Kapazität {self.productive_capacity:.1f} und Tech-Level {self.tech_level:.2f}."
+        )
+        self.logger.info(
+            f"Producer {self.unique_id} initialisiert mit Compliance: {self.compliance_level:.2f}, "
+            f"Hoarding: {self.hoarding_propensity:.2f}"
+        )
 
     def _create_production_lines(self, line_configs: List[Dict[str, Any]]) -> List[ProductionLine]:
         """Erstellt ProductionLine-Objekte aus Konfigurations-Dictionaries."""
@@ -496,6 +521,13 @@ class ProducerAgent:
             self.choose_next_action()
         elif stage == "production_execution":
             self.execute_production()
+            # NEU: Rufe die Hortungslogik nach der Produktion auf.
+            returned_surplus = self.manage_surplus_resources()
+            if returned_surplus:
+                if hasattr(self.model, 'collect_surplus_resources'):
+                    self.model.collect_surplus_resources(self.region_id, returned_surplus)
+                else:
+                    self.logger.warning("Model hat keine Methode 'collect_surplus_resources', um Überschüsse zu verarbeiten.")
         elif stage == "distribute_output": # Stage umbenannt / hinzugefügt?
             return self.get_produced_output() # Gibt Output zurück zur Verteilung
         elif stage == "investment_and_depreciation":
@@ -607,6 +639,8 @@ class ProducerAgent:
         """
         Plant die Produktion für den nächsten Schritt basierend auf Zielen und Ressourcen.
         Setzt `line.planned_output`, `line.bottleneck_info` und `line.planned_consumed_inputs`.
+
+        **ÄNDERUNG:** Berücksichtigt jetzt `capacity_misreporting_factor`.
         """
         self.logger.debug(f"Producer {self.unique_id}: Starte lokale Produktionsplanung...")
         # 1. Kapazitätsallokation updaten (basierend auf aktuellen Zielen/Prioritäten)
@@ -624,7 +658,9 @@ class ProducerAgent:
                               key=lambda l: l.priority, reverse=True)
 
         for line in sorted_lines:
-            target_output = line.target_output
+            # ORIGINAL: target_output = line.target_output
+            # MODIFIZIERT: Reduziere das Ziel basierend auf Compliance
+            target_output = line.target_output * self.compliance_level
             if target_output <= 0:
                 line.planned_output = 0.0
                 line.planned_consumed_inputs = {} # **FIX**: Reset planned inputs
@@ -857,6 +893,35 @@ class ProducerAgent:
         logger.info(f"Producer {self.unique_id}: Produktion ausgeführt. Gesamt-Output: {self.total_output_this_step:.2f}. "
                             f"Kap-Auslastung: {self.capacity_utilization:.1%}. "
                             f"Emissionen (Top 1): {list(total_emissions_this_step.items())[0] if total_emissions_this_step else 'Keine'}.")
+
+    def manage_surplus_resources(self) -> Dict[str, float]:
+        """
+        Entscheidet, was mit ungenutzten Ressourcen passiert.
+        Ein Teil wird gehortet, der Rest wird zurückgegeben.
+
+        Returns:
+            Ein Dictionary der Ressourcen, die an das System (z.B. regionales Lager)
+            zurückgegeben werden.
+        """
+        surplus_to_return: Dict[str, float] = {}
+
+        for resource, amount in list(self.resource_stock.items()):
+            if amount <= 0:
+                continue
+
+            amount_to_hoard = amount * self.hoarding_propensity
+            amount_to_return = amount - amount_to_hoard
+
+            if amount_to_hoard > 1e-6:
+                self.hoarded_resources[resource] += amount_to_hoard
+                self.resource_stock[resource] -= amount_to_hoard
+                self.logger.debug(f"Producer {self.unique_id} hortet {amount_to_hoard:.2f} von {resource}.")
+
+            if amount_to_return > 1e-6:
+                surplus_to_return[resource] = amount_to_return
+                self.resource_stock[resource] -= amount_to_return
+
+        return surplus_to_return
 
 
     def get_produced_output(self) -> Dict[str, float]:

@@ -60,6 +60,18 @@ PARAMETER_SPACE: Dict[str, Dict[str, Any]] = {
         "type": "float",
         "range": (0.01, 0.05),
     },
+    "producer_compliance_level": {
+        "path": "agent_populations.default_producers.params.compliance_level",
+        "type": "float",
+        "range": (0.7, 1.0),
+        "description": "Wie stark ein Produzent versucht, Planziele exakt zu erfüllen."
+    },
+    "producer_hoarding_propensity": {
+        "path": "agent_populations.default_producers.params.hoarding_propensity",
+        "type": "float",
+        "range": (0.0, 0.4),
+        "description": "Die Neigung eines Produzenten, ungenutzte Ressourcen zu horten."
+    },
 
     # Strukturelle Parameter (Zusammensetzung der Wirtschaft)
     "producer_count_ratio": {
