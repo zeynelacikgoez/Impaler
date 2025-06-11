@@ -142,6 +142,9 @@ class ConsumerAgent:
 
     elasticity_method: str
     sigma: float # für CES
+    available_labor_hours: float
+    skills: Dict[str, float]
+    work_satisfaction: float
 
     def __init__(self,
                  unique_id: str,
@@ -243,6 +246,11 @@ class ConsumerAgent:
             kwargs.get("social_influence_factor", adapt_params.get("social_influence_factor", 0.1))
         )  # Default 0.1
 
+        # Arbeit & Skills
+        self.available_labor_hours: float = float(kwargs.get("available_labor_hours", 40.0))
+        self.skills: Dict[str, float] = kwargs.get("skills", {})
+        self.work_satisfaction: float = 0.5
+
         # Parameter für lernbasiertes Substitutionsverhalten
         sub_cfg = adapt_params.get("substitution", {}) if isinstance(adapt_params, dict) else {}
         self.sub_cfg = {
@@ -335,6 +343,13 @@ class ConsumerAgent:
             self._prepared_substitutes[original_good] = entries
         elif original_good in self._prepared_substitutes:
             del self._prepared_substitutes[original_good]
+
+    def get_labor_offering(self) -> Dict[str, Any]:
+        """Stellt die verfügbare Arbeitskraft und Skills zur Verfügung."""
+        return {
+            "hours": self.available_labor_hours,
+            "skills": self.skills.copy(),
+        }
 
 
     # --- Stage Execution ---

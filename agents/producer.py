@@ -156,6 +156,8 @@ class ProductionLine:
     output_history: Deque[Tuple[int, float]]
     bottleneck_info: Optional[Dict[str, Any]]
     planned_consumed_inputs: Dict[str, float]
+    labor_requirement: float
+    required_skills: Dict[str, float]
 
     def __init__(
         self,
@@ -168,7 +170,8 @@ class ProductionLine:
         max_capacity: Optional[float] = None,
         priority: float = 1.0,
         setup_cost: float = 0.0,
-        is_active: bool = True
+        is_active: bool = True,
+        **kwargs,
     ):
         self.name = name
         self.output_good = output_good
@@ -181,6 +184,9 @@ class ProductionLine:
         self.priority = max(0.1, priority)
         self.setup_cost = setup_cost
         self.is_active = is_active
+
+        self.labor_requirement: float = float(kwargs.get("labor_per_unit", 1.0))
+        self.required_skills: Dict[str, float] = kwargs.get("required_skills", {})
 
         # Laufzeitdaten initialisieren
         self.capacity_share = 0.0
@@ -199,6 +205,8 @@ class ProductionLine:
         required_output_factor = output_amount / self.effective_efficiency
         for req in self.input_requirements:
             inputs[req.resource_type] = required_output_factor * req.amount_per_unit
+
+        inputs["labor"] = required_output_factor * self.labor_requirement
         return inputs
 
     def calculate_emissions_for_output(self, output_amount: float) -> Dict[str, float]:
@@ -277,6 +285,8 @@ class ProducerAgent:
     _prev_avg_efficiency: float
     _prev_maintenance_status: float
     pending_rl_action: Optional[int]
+    assigned_labor: List[Dict[str, Any]]
+    assigned_labor_hours: float
 
     def __init__(
         self,
@@ -397,6 +407,10 @@ class ProducerAgent:
         # Interner Speicher für gehortete Ressourcen
         self.hoarded_resources: DefaultDict[str, float] = defaultdict(float)
 
+        # Arbeitszuweisungen
+        self.assigned_labor: List[Dict[str, Any]] = []
+        self.assigned_labor_hours: float = 0.0
+
         # RL-Komponente
         self.rl_mode = enable_rl and RL_AVAILABLE # RL_AVAILABLE prüft q_learning.py
         self.rl_agent = None
@@ -485,7 +499,9 @@ class ProducerAgent:
                     max_capacity=cfg.get("max_capacity"),
                     priority=cfg.get("priority", 1.0),
                     setup_cost=cfg.get("setup_cost", 0.0),
-                    is_active=cfg.get("is_active", True)
+                    is_active=cfg.get("is_active", True),
+                    labor_per_unit=cfg.get("labor_per_unit", 1.0),
+                    required_skills=cfg.get("required_skills", {}),
                 )
                 lines.append(line)
             except KeyError as e:

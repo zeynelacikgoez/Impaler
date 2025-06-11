@@ -1307,6 +1307,9 @@ class RegionalSystem3Manager:
         # 2. Ressourcenbedarf für regionale Ziele berechnen
         self._calculate_resource_requirements()
 
+        # 2.5 Arbeit allokieren
+        self._allocate_labor()
+
         # 3. Verfügbare Ressourcen (aus self.resource_pool) auf Producer verteilen
         self._allocate_resources_to_producers()
 
@@ -1340,6 +1343,34 @@ class RegionalSystem3Manager:
             self.logger.debug(
                 f"Region {self.region_id}: Top Bedarfe: {[(r, f'{a:.1f}') for r,a in top_needs]}"
             )
+
+    def _allocate_labor(self) -> None:
+        """Weist Arbeitskräfte (Consumer) den Produzenten zu."""
+        self.logger.debug(f"Region {self.region_id}: Alloziiere Arbeitskräfte...")
+
+        available_labor_pool = []
+        for consumer in self.local_consumers:
+            offering = consumer.get_labor_offering()
+            offering['consumer_id'] = consumer.unique_id
+            available_labor_pool.append(offering)
+
+        total_labor_demand = 0.0
+        producer_labor_needs = {}
+        for pid, producer in self.producers.items():
+            labor_needed = 0.0
+            for line in producer.production_lines:
+                target = producer.production_target.get(line.output_good, 0)
+                labor_needed += (target / line.effective_efficiency) * line.labor_requirement
+            producer_labor_needs[pid] = labor_needed
+            total_labor_demand += labor_needed
+
+        total_available_hours = sum(l['hours'] for l in available_labor_pool)
+
+        if total_labor_demand > 0:
+            allocation_factor = min(1.0, total_available_hours / total_labor_demand)
+            for pid, demand_hours in producer_labor_needs.items():
+                allocated_hours = demand_hours * allocation_factor
+                self.producers[pid].assigned_labor_hours = allocated_hours
 
     def _allocate_resources_to_producers(self) -> None:
         """Verteilt die in `self.resource_pool` verfügbaren Ressourcen auf die Producer."""
@@ -1505,10 +1536,20 @@ class RegionalSystem3Manager:
             # Setze finale Ziele
             initial_targets = getattr(p, "production_target", {})
             final_targets = {}
+            labor_limit = float('inf')
+            if hasattr(p, 'assigned_labor_hours'):
+                total_labor_needed_for_target = 0
+                for good, target in initial_targets.items():
+                    line = next((l for l in p.production_lines if l.output_good == good), None)
+                    if line:
+                        total_labor_needed_for_target += (target / line.effective_efficiency) * line.labor_requirement
+                if total_labor_needed_for_target > 1e-6:
+                    labor_fulfillment_ratio = p.assigned_labor_hours / total_labor_needed_for_target
+                    labor_limit = labor_fulfillment_ratio
             for good in getattr(p, "can_produce", set()):
                 initial_target = initial_targets.get(good, 0.0)
                 resource_limit = max_possible_prod.get(good, 0.0)
-                final_target = min(initial_target, resource_limit)
+                final_target = min(initial_target, resource_limit, initial_target * labor_limit)
                 penalty_factor = self.producer_penalties.get(pid, {}).get(
                     "production_target", 1.0
                 )
